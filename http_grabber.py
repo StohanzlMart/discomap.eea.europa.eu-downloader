@@ -161,8 +161,6 @@ def main():
         info(f'not found db:{db} but found {concat_csv_file}... loading it')
         my_df = pd.read_csv(concat_csv_file, sep=",", usecols=fields, dtype=dtypes, parse_dates=parse_dates, encoding="utf-8")
 
-
-
     
     if not (db_folder / str(db+'.db')).is_file():
         info(f'db not found {db}')
@@ -175,12 +173,14 @@ def main():
     else:
         info(f'db found {db}, loading...')
         my_df = import_df_from_sqlite_db('NO2')
-        my_df.set_index(['DatetimeBegin'],inplace=True)
-        my_df.sort_index(inplace=True)
-        #concatenated_df.plot(concatenated_df["DatetimeBegin"], concatenated_df["Concentration"])
-        my_df.info()
-        my_df.plot()
-        plt.show()
+    
+    my_df.set_index(['DatetimeBegin'],inplace=True)
+    my_df.sort_index(inplace=True)
+    #concatenated_df.plot(concatenated_df["DatetimeBegin"], concatenated_df["Concentration"])
+    my_df.interpolate(method='linear', limit_direction='forward', axis=0, inplace=True)
+    my_df.info()
+    my_df.plot()
+    plt.show()
 
     #fig, ax1 = plt.subplots()
     #ax2 = ax1.twinx()

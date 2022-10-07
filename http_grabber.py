@@ -6,7 +6,7 @@ import pandas as pd
 from requests import get
 from pathlib import Path
 from pprint import pprint, pformat
-from typing import List, TypeVar
+from typing import List, Dict
 from urllib.parse import parse_qs, parse_qsl, urlparse
 from collections import namedtuple
 from sqlalchemy import create_engine
@@ -85,26 +85,42 @@ def download_bulk_from_txt(file:Path, my_path:Path='csvs', my_encoding:str='utf-
     else:
         error(f'trying to open file that does not exist: {file}')
 
-def export_to_sqlite_db(df:pd.core.frame.DataFrame, folder:Path=''):
-    # (2) Enlesen in eine SQLITE DB
+def export_df_to_sqlite_db(df:pd.core.frame.DataFrame, db_name:str='default', folder:Path=Path('data')/'dbs'):
+    # Einlesen in eine SQLITE DB
     try:
         # Erstellen einer SQLITE-DB im SQLITE-DB Verzeichnis
-        cnx = sqlite3.connect(Path(folder) / 'NO2.db')
+        mksubdir(folder)
+        db_file_loc=str(str(Path(folder).absolute() / str(db_name+'.db')))
+        info(db_file_loc)
+        cnx = sqlite3.connect(db_file_loc)
         # Schreiben der Daten
-        df.to_sql(name='NO2', con=cnx, if_exists="replace")
+        df.to_sql(name=db_name, con=cnx, if_exists="replace")
         
     except sqlite3.Error as e:
-        print("Error...", e)
+        error(f"Error...{e}")
+        return False
         
     finally:
-        if (cnx):
-            cnx.close()
-            print("Connection Closed!")
+        if 'cnx' in locals():
+            if cnx:
+                cnx.close()
+                print("SQLite Connection Closed!")
+                return True
 
-def import_from_sqlite_db():
-    engine = create_engine(Path() / 'NO2.db')
-    # (3) Auslesen der Daten aus der Datenbank
-    NO2 = pd.read_sql('select * from NO2', engine)
+def import_df_from_sqlite_db(db_name:str='default', folder:Path=Path('data')/'dbs') -> pd.core.frame.DataFrame:
+    db_file_loc = str('sqlite:///'+str(Path(folder).absolute() / str(db_name+'.db')))
+    info(db_file_loc)
+    engine = create_engine(db_file_loc)
+    promt = str('select * from '+db_name)
+    info(promt)
+    return pd.read_sql(promt, engine)
+
+def all_csv_in_to_df(all_files, usecols:List[str], dtypes, parse_dates:List[str]):
+    df_from_each_file = (pd.read_csv(f, sep=",", usecols=usecols, dtype=dtypes, parse_dates=parse_dates, encoding="utf-8") for f in all_files)
+    concatenated_df   = pd.concat(df_from_each_file, ignore_index=True)
+    #concatenated_df['diff'] = concatenated_df['DatetimeEnd'] - concatenated_df['DatetimeBegin']
+    #concatenated_df = concatenated_df.drop('DatetimeEnd', axis=1)
+    return concatenated_df
 
 def main():
     basicConfig(level=INFO)
@@ -117,8 +133,8 @@ def main():
     info(pformat(urls))
 
     for url in urls:
-        entry = download_file_chunked(url, datadir / 'src')
-        download_bulk_from_txt(entry, datadir/make_filename_from_query_url(url,True))
+        text_with_csv_urls = download_file_chunked(url, datadir / 'src')
+        download_bulk_from_txt(text_with_csv_urls, datadir/make_filename_from_query_url(url,True))
     
     info('Finished')
 
@@ -126,27 +142,45 @@ def main():
     info(my_path)
     all_files = sorted( my_path.glob('**/*.csv'))
 
-
     #pprint(all_files)
-
-    fields = ['DatetimeBegin', 'Concentration', 'DatetimeEnd']
-    parse_dates = fields[1:3]
+    fields = ['DatetimeBegin', 'Concentration']
+    parse_dates = fields[::2]
     print(parse_dates)
     dtypes = {'DatetimeBegin': 'str', 'Concentration': 'float', 'DatetimeEnd': 'str'}
-    df_from_each_file = (pd.read_csv(f, sep=",", usecols=fields, dtype=dtypes, parse_dates=parse_dates, encoding="utf-8") for f in all_files)
-    concatenated_df   = pd.concat(df_from_each_file, ignore_index=True)
-    #concatenated_df['diff'] = concatenated_df['DatetimeEnd'] - concatenated_df['DatetimeBegin']
-    concatenated_df = concatenated_df.drop('DatetimeEnd', axis=1)
-    pprint(concatenated_df)
-    concatenated_df.to_csv('all.csv', sep=',', encoding='utf-8', index=False)
+    concat_csv_file = datadir / 'concat' / 'all.csv'
+    db_folder = Path('data') / 'dbs'
+    db = 'NO2'
 
-    concatenated_df.set_index(['DatetimeBegin'],inplace=True)
-    my_df = concatenated_df.apply(pd.to_numeric, errors='coerce')
-    my_df.interpolate(method='linear', limit_direction='forward', axis=1)
-    my_df.info()
-    #concatenated_df.plot(concatenated_df["DatetimeBegin"], concatenated_df["Concentration"])
-    my_df.plot()
-    plt.show()
+    my_df = None
+    if not concat_csv_file.is_file():
+        mksubdir(concat_csv_file.parent)
+        info(f'not found {concat_csv_file}... generating it')
+        my_df = all_csv_in_to_df(all_files, fields, dtypes, parse_dates)
+        my_df.to_csv(concat_csv_file, sep=',', encoding='utf-8', index=False)
+    elif not (db_folder / str(db+'.db')).is_file():
+        info(f'not found db:{db} but found {concat_csv_file}... loading it')
+        my_df = pd.read_csv(concat_csv_file, sep=",", usecols=fields, dtype=dtypes, parse_dates=parse_dates, encoding="utf-8")
+
+
+
+    
+    if not (db_folder / str(db+'.db')).is_file():
+        info(f'db not found {db}')
+        my_df.set_index(['DatetimeBegin'],inplace=True)
+        my_df = my_df.apply(pd.to_numeric, errors='coerce')
+        my_df.interpolate(method='linear', limit_direction='forward', axis=1)
+        my_df.info()
+        if (export_df_to_sqlite_db(my_df, 'NO2')):
+            my_df = import_df_from_sqlite_db('NO2')
+    else:
+        info(f'db found {db}, loading...')
+        my_df = import_df_from_sqlite_db('NO2')
+        my_df.set_index(['DatetimeBegin'],inplace=True)
+        my_df.sort_index(inplace=True)
+        #concatenated_df.plot(concatenated_df["DatetimeBegin"], concatenated_df["Concentration"])
+        my_df.info()
+        my_df.plot()
+        plt.show()
 
     #fig, ax1 = plt.subplots()
     #ax2 = ax1.twinx()
